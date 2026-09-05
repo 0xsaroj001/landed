@@ -2,9 +2,11 @@
  * Buyer: discovers the payout agent's card, pays x402 (Base Sepolia USDC) when the entrypoint is priced,
  * invokes it, and prints the KeeperHub proof. Also runs the failing case that must not charge the buyer.
  *
- *   npm run buyer -- payout --to 0x... --amount 0.01 [--reference inv-42]
+ *   npm run buyer -- payout --to 0x... --amount 0.01 [--reference inv-42] [--fresh-key]
+ *   npm run buyer -- subscribe --to 0x... --amount 0.01 --cron "0 9 * * 1" [--timezone UTC] [--run-now]
  *   npm run buyer -- dry-run --to 0x... --amount 0.01
  *   npm run buyer -- execution --reference inv-42
+ *   npm run buyer -- watch --reference inv-42          (SSE stream of stages)
  */
 import "dotenv/config";
 import { createHash, randomBytes } from "node:crypto";
@@ -61,6 +63,33 @@ if (buyerAddress) {
 const input: Record<string, unknown> = { reference };
 if (args.to) input.recipientAddress = args.to;
 if (args.amount) input.amount = String(args.amount);
+if (typeof args.cron === "string") input.cron = args.cron;
+if (typeof args.timezone === "string") input.timezone = args.timezone;
+if (args["run-now"]) input.runNow = true;
+if (typeof args.json === "string") Object.assign(input, JSON.parse(args.json) as Record<string, unknown>);
+
+if (entrypoint === "watch") {
+  // Streaming entrypoint: print SSE lines as they arrive.
+  console.log(`stream     POST ${seller}/entrypoints/watch/stream  reference=${reference}`);
+  const streamRes = await fetch(`${seller}/entrypoints/watch/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input: { reference } }),
+  });
+  console.log(`response   HTTP ${streamRes.status}`);
+  const reader = streamRes.body?.getReader();
+  const decoder = new TextDecoder();
+  if (reader) {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value, { stream: true }).split("\n")) {
+        if (line.startsWith("data:")) console.log(`  ${line.slice(5).trim()}`);
+      }
+    }
+  }
+  process.exit(streamRes.ok ? 0 : 1);
+}
 // Lucid's HTTP idempotency key must be 20-256 chars; derive it from the reference so a retry replays.
 // --fresh-key sends a new HTTP key so the handler re-runs and KeeperHub's own replay (replayed: true) shows.
 const idempotencyKey = args["fresh-key"]

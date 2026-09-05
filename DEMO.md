@@ -76,6 +76,18 @@ Expected: new `run_id`, same `executionId: "direct_1"`, `replayed: true`; Keeper
 
 Policy stop (before any KeeperHub call): `--amount 5000` → `HTTP 500`, message `policy_denied: amount 5000 exceeds the agent's maximum of 1000`.
 
+Standing order through an agent-authored KeeperHub workflow (⏳ HTTP run pending; unit-tested):
+```bash
+npm run buyer -- subscribe --to 0x742d35Cc6634C0532925a3b844Bc454e4438f44e --amount 0.01 --cron "0 9 * * 1" --timezone UTC --run-now --reference payroll-1
+```
+Expected: `HTTP 200`, `output.workflowId: "wf_1"`, `name: "landed:payroll-1"`, `created: true`, `firstRun.status: "success"` with one verified hash. Repeating the command returns `created: false` and the same `workflowId`.
+
+Follow a reference live over SSE (⏳ HTTP run pending; unit-tested):
+```bash
+npm run buyer -- watch --reference demo-1
+```
+Expected: one `data:` line per stage (`received`, `policy_ok`, `simulated`, `broadcast`, `accepted`, `landed`), then a `finished` control line with the record summary.
+
 ## 3. Smoke: one real transfer through KeeperHub ⏳ needs KEEPERHUB_API_KEY + Base Sepolia USDC in the org wallet
 ```bash
 npm run smoke

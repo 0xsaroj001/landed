@@ -24,6 +24,18 @@ buyer agent ──x402 (Base Sepolia USDC)──► Lucid seller agent ──►
 - **`apps/buyer`**: a buyer CLI that discovers the card, pays, invokes, and prints its USDC balance before and after.
 - **`apps/smoke`**: one real transfer through KeeperHub, stage by stage, ending in a proof link.
 
+## What the payout agent sells
+
+| Entrypoint | Price | KeeperHub surface | What you get |
+|---|---|---|---|
+| `payout` | 0.01 USD (x402) | direct execution: simulate → broadcast → verified receipt | a landed transfer with `executionId`, `transactionHash`, `transactionLink`, receipt and a stage timeline |
+| `subscribe` | 0.01 USD (x402) | agent-authored workflow: `POST /api/workflows/create` with a Schedule trigger | a standing order KeeperHub's scheduler runs on your cron; `runNow` returns the first run's verified hashes |
+| `dry-run` | free | simulation | policy verdict plus KeeperHub's dry run, before you pay |
+| `execution` | free | audit trail | the full record for a reference |
+| `watch` | free | audit trail (SSE) | every stage as it happens |
+
+Every call carries a `reference` (invoice id, task id, period). The same reference never pays twice, at either layer.
+
 ## Why this is an integration and not a wrapper
 
 | Lucid lifecycle | KeeperHub lifecycle | Landed rule |
