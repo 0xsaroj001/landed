@@ -7,6 +7,7 @@
  *   npm run buyer -- execution --reference inv-42
  */
 import "dotenv/config";
+import { createHash } from "node:crypto";
 import { accountFromPrivateKey, createX402Fetch } from "@lucid-agents/payments";
 import { createPublicClient, formatUnits, http as viemHttp, type Hex } from "viem";
 import { baseSepolia } from "viem/chains";
@@ -60,12 +61,15 @@ if (buyerAddress) {
 const input: Record<string, unknown> = { reference };
 if (args.to) input.recipientAddress = args.to;
 if (args.amount) input.amount = String(args.amount);
+// Lucid's HTTP idempotency key must be 20-256 chars; derive it from the reference so a retry replays.
+const idempotencyKey = createHash("sha256").update(`landed:${entrypoint}:${reference}`).digest("hex");
 console.log(`invoke     POST ${seller}/entrypoints/${entrypoint}/invoke  reference=${reference}${priced ? `  (x402 ${priced} USD)` : ""}`);
+console.log(`           Idempotency-Key ${idempotencyKey.slice(0, 16)}… (sha256 of the reference)`);
 
 const started = Date.now();
 const res = await paidFetch(`${seller}/entrypoints/${entrypoint}/invoke`, {
   method: "POST",
-  headers: { "content-type": "application/json", "idempotency-key": reference },
+  headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
   body: JSON.stringify({ input }),
 });
 const text = await res.text();

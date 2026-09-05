@@ -172,8 +172,10 @@ describe("keeperhub() extension on a real Lucid runtime", () => {
 
   it("honours Lucid's own Idempotency-Key so a retried HTTP call never re-runs the handler", async () => {
     const { agent, mock } = await buildAgent();
-    const headers = { "idempotency-key": "http-retry-1" };
+    // Lucid requires 20-256 characters for its Idempotency-Key header.
+    const headers = { "idempotency-key": "http-retry-1-0123456789abcdef" };
     const first = await invoke(agent, "payout", { reference: "inv-6", recipientAddress: RECIPIENT, amount: "0.01" }, headers);
+    expect(first.status).toBe(200);
     const calls = mock.calls.length;
     const second = await invoke(agent, "payout", { reference: "inv-6", recipientAddress: RECIPIENT, amount: "0.01" }, headers);
     expect(second.status).toBe(first.status);

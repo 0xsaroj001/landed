@@ -16,7 +16,9 @@ export interface MockCall {
 export interface MockOptions {
   apiKey?: string;
   /** Answer for dry runs. Default: success. Return `{ wouldRevert: true, code }` to fail the preflight. */
-  simulate?: (body: Record<string, unknown>) => Record<string, unknown>;
+  simulate?: (body: Record<string, unknown>) => Record<string, unknown> | undefined;
+  /** Address reported by GET /api/user. */
+  walletAddress?: string;
   /** Status the 202 body carries. Default "completed". */
   executeStatus?: ExecutionStatus;
   /** Statuses returned by successive status polls; the last one repeats. Default [executeStatus]. */
@@ -87,6 +89,9 @@ export function createMockKeeperHub(options: MockOptions = {}) {
     }
     if (method === "GET" && url.pathname === "/api/keys") {
       return json(200, []);
+    }
+    if (method === "GET" && url.pathname === "/api/user") {
+      return json(200, { id: "user_mock", email: "mock@wallet.keeperhub.com", providerId: "siwe", walletAddress: options.walletAddress ?? "0x1111111111111111111111111111111111111111" });
     }
     if (method === "GET" && url.pathname === "/api/chains") {
       return json(200, [{ chainId: 84532, name: "Base Sepolia", isTestnet: true, isEnabled: true }]);
