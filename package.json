@@ -1,0 +1,30 @@
+{
+  "name": "landed",
+  "private": true,
+  "version": "0.1.0",
+  "description": "KeeperHub as the execution layer inside Lucid Agents: the buyer pays only when the transaction lands.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "tsx apps/smoke/src/index.ts",
+    "seller": "tsx apps/payout-agent/src/index.ts",
+    "buyer": "tsx apps/buyer/src/index.ts",
+    "seller:mock": "tsx apps/payout-agent/src/index.ts --mock",
+    "buyer:dry": "tsx apps/buyer/src/index.ts dry-run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

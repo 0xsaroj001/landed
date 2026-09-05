@@ -1,0 +1,115 @@
+/**
+ * Buyer: discovers the payout agent's card, pays x402 (Base Sepolia USDC) when the entrypoint is priced,
+ * invokes it, and prints the KeeperHub proof. Also runs the failing case that must not charge the buyer.
+ *
+ *   npm run buyer -- payout --to 0x... --amount 0.01 [--reference inv-42]
+ *   npm run buyer -- dry-run --to 0x... --amount 0.01
+ *   npm run buyer -- execution --reference inv-42
+ */
+import "dotenv/config";
+import { accountFromPrivateKey, createX402Fetch } from "@lucid-agents/payments";
+import { createPublicClient, formatUnits, http as viemHttp, type Hex } from "viem";
+import { baseSepolia } from "viem/chains";
+
+const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
+const ERC20_BALANCE_ABI = [
+  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "owner", type: "address" }], outputs: [{ type: "uint256" }] },
+] as const;
+
+const [entrypoint = "payout", ...rest] = process.argv.slice(2);
+const args = parseArgs(rest);
+const seller = String(args.seller ?? process.env.SELLER_URL ?? "http://localhost:8787").replace(/\/+$/, "");
+const reference = String(args.reference ?? `buyer-${Date.now().toString(36)}`);
+const privateKey = process.env.BUYER_PRIVATE_KEY;
+
+const card = (await (await fetch(`${seller}/.well-known/agent-card.json`)).json()) as {
+  name: string;
+  entrypoints: Record<string, { pricing?: { invoke?: string }; price?: string; description?: string }>;
+  capabilities?: { extensions?: Array<Record<string, unknown>> };
+};
+console.log(`agent      ${card.name}`);
+for (const [key, def] of Object.entries(card.entrypoints)) {
+  console.log(`  ${key.padEnd(10)} ${def.pricing?.invoke ?? def.price ?? "free"}`);
+}
+const descriptor = card.capabilities?.extensions?.find((e) => e.uri === "urn:landed:keeperhub-execution:v1");
+if (descriptor) {
+  console.log(`execution  ${String((descriptor.params as Record<string, unknown>)?.executionLayer)} via ${String((descriptor.params as Record<string, unknown>)?.keeperhub)}`);
+}
+
+const priced = card.entrypoints[entrypoint]?.pricing?.invoke ?? card.entrypoints[entrypoint]?.price;
+let paidFetch: typeof fetch = fetch;
+let buyerAddress: Hex | undefined;
+if (privateKey && privateKey !== "0x...") {
+  const account = accountFromPrivateKey(privateKey as Hex);
+  buyerAddress = account.address as Hex;
+  paidFetch = createX402Fetch({ account, networks: ["base-sepolia"] }) as unknown as typeof fetch;
+} else if (priced) {
+  console.error(`entrypoint "${entrypoint}" costs ${priced} but BUYER_PRIVATE_KEY is not set`);
+  process.exit(2);
+}
+
+const publicClient = createPublicClient({ chain: baseSepolia, transport: viemHttp(process.env.BASE_SEPOLIA_RPC) });
+const usdcBalance = async (address: Hex) =>
+  formatUnits(await publicClient.readContract({ address: USDC_BASE_SEPOLIA, abi: ERC20_BALANCE_ABI, functionName: "balanceOf", args: [address] }), 6);
+
+const before = buyerAddress ? await usdcBalance(buyerAddress) : undefined;
+if (buyerAddress) {
+  console.log(`buyer      ${buyerAddress}  USDC before: ${before}`);
+}
+
+const input: Record<string, unknown> = { reference };
+if (args.to) input.recipientAddress = args.to;
+if (args.amount) input.amount = String(args.amount);
+console.log(`invoke     POST ${seller}/entrypoints/${entrypoint}/invoke  reference=${reference}${priced ? `  (x402 ${priced} USD)` : ""}`);
+
+const started = Date.now();
+const res = await paidFetch(`${seller}/entrypoints/${entrypoint}/invoke`, {
+  method: "POST",
+  headers: { "content-type": "application/json", "idempotency-key": reference },
+  body: JSON.stringify({ input }),
+});
+const text = await res.text();
+let body: unknown = text;
+try {
+  body = JSON.parse(text);
+} catch {
+  // keep text
+}
+console.log(`response   HTTP ${res.status} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+for (const header of ["payment-response", "x-payment-response", "payment-receipt"]) {
+  const value = res.headers.get(header);
+  if (value) console.log(`  ${header}: ${value.length > 120 ? `${value.slice(0, 120)}…` : value}`);
+}
+console.log(JSON.stringify(body, null, 2));
+
+if (res.ok && entrypoint === "payout") {
+  const output = (body as { output?: Record<string, unknown> }).output ?? {};
+  console.log(`\nlanded     ${String(output.transactionLink ?? output.transactionHash)}`);
+}
+
+if (buyerAddress) {
+  const after = await usdcBalance(buyerAddress);
+  const delta = Number(after) - Number(before);
+  console.log(`buyer      USDC after: ${after}  (${delta >= 0 ? "+" : ""}${delta.toFixed(6)})`);
+  if (!res.ok && Math.abs(delta) < 1e-9) {
+    console.log("           the call failed and the buyer was not charged: the cent never left.");
+  }
+}
+process.exit(res.ok ? 0 : 1);
+
+function parseArgs(argv: string[]): Record<string, string | true> {
+  const out: Record<string, string | true> = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (!arg.startsWith("--")) continue;
+    const name = arg.slice(2);
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      out[name] = next;
+      i += 1;
+    } else {
+      out[name] = true;
+    }
+  }
+  return out;
+}

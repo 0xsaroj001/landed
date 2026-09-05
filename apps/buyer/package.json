@@ -1,0 +1,11 @@
+{
+  "name": "@landed/buyer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@lucid-agents/payments": "^5.0.0",
+    "dotenv": "^17.0.0",
+    "viem": "^2.55.8"
+  }
+}
