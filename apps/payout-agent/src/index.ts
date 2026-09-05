@@ -20,7 +20,7 @@ if (!mock && (!apiKey || apiKey === "kh_...")) {
 }
 
 const paymentsConfig = mock ? undefined : paymentsFromEnv();
-const { app, client, summary } = await createPayoutAgent({
+const { app, client, runtime, summary } = await createPayoutAgent({
   mock,
   apiKey,
   baseUrl: process.env.KEEPERHUB_BASE_URL,
@@ -34,8 +34,13 @@ const { app, client, summary } = await createPayoutAgent({
 serve({ fetch: app.fetch, port }, async () => {
   console.log(`landed-payout-agent listening on ${origin}${summary.mock ? "  [MOCK KeeperHub: replay mode, no network]" : ""}`);
   console.log(`  agent card   ${origin}/.well-known/agent-card.json`);
+  const priced = new Set(["payout", "subscribe"]);
+  const network = String((paymentsConfig as { network?: string } | undefined)?.network ?? "");
   console.log(
-    `  entrypoints  payout (${summary.paid ? `x402 ${summary.price} USD on ${String((paymentsConfig as { network?: string } | undefined)?.network ?? "")}` : "free"}), dry-run (free), execution (free)`,
+    `  entrypoints  ${runtime.entrypoints
+      .list()
+      .map((e) => `${e.key} (${summary.paid && priced.has(e.key) ? `x402 ${summary.price} USD on ${network}` : "free"}${e.streaming ? ", sse" : ""})`)
+      .join(", ")}`,
   );
   console.log(`  policy       chain=${summary.chainId} token=${summary.tokenAddress ?? "native"} maxAmount=${summary.maxAmount}`);
   try {
