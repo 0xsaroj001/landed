@@ -19,7 +19,8 @@
     "seller": "tsx apps/payout-agent/src/index.ts",
     "buyer": "tsx apps/buyer/src/index.ts",
     "seller:mock": "tsx apps/payout-agent/src/index.ts --mock",
-    "buyer:dry": "tsx apps/buyer/src/index.ts dry-run"
+    "buyer:dry": "tsx apps/buyer/src/index.ts dry-run",
+    "ledger": "tsx apps/ledger/src/index.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -2,8 +2,10 @@ import { KeeperHubClient, USDC, createMockKeeperHub } from "@landed/keeperhub-cl
 import {
   keeperhub,
   keeperhubDryRunEntrypoint,
+  keeperhubScheduleEntrypoint,
   keeperhubStatusEntrypoint,
   keeperhubTransferEntrypoint,
+  keeperhubWatchEntrypoint,
 } from "@landed/lucid-keeperhub";
 import { createAgent } from "@lucid-agents/core";
 import { createAgentApp } from "@lucid-agents/hono";
@@ -84,8 +86,18 @@ export async function createPayoutAgent(options: PayoutAgentOptions = {}) {
       description: `Pay ${price ? `${price} USD` : "nothing (free in this mode)"}, receive a verified ${tokenAddress ? "USDC" : "native"} transfer on chain ${chainId} executed through KeeperHub. Payment settles only when the transaction lands.`,
     }),
   );
+  addEntrypoint(
+    keeperhubScheduleEntrypoint({
+      key: "subscribe",
+      price,
+      chainId,
+      tokenAddress,
+      description: `Pay ${price ? `${price} USD` : "nothing (free in this mode)"} once, get a standing order: KeeperHub's scheduler runs this ${tokenAddress ? "USDC" : "native"} payout on your cron on chain ${chainId}. One workflow per reference.`,
+    }),
+  );
   addEntrypoint(keeperhubDryRunEntrypoint({ key: "dry-run", chainId, tokenAddress }));
   addEntrypoint(keeperhubStatusEntrypoint({ key: "execution" }));
+  addEntrypoint(keeperhubWatchEntrypoint({ key: "watch" }));
 
   return {
     app,

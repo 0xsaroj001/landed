@@ -263,6 +263,61 @@ describe("status and waiting", () => {
   });
 });
 
+describe("agent-authored workflows", () => {
+  it("builds a Schedule → transfer-token workflow with KeeperHub's node and config keys", async () => {
+    const { scheduledTransferWorkflow, isValidCron } = await import("../src/workflows.ts");
+    expect(isValidCron("0 9 * * 1")).toBe(true);
+    expect(isValidCron("*/30 * * * *")).toBe(true);
+    expect(isValidCron("every monday")).toBe(false);
+    expect(isValidCron("0 9 * *")).toBe(false);
+    const def = scheduledTransferWorkflow({ name: "landed:x", cron: "0 9 * * 1", timezone: "UTC", chainId: "base-sepolia", recipientAddress: RECIPIENT, amount: "0.010", tokenAddress: USDC, enabled: true });
+    expect(def.nodes[0]).toEqual({ id: "trigger", type: "trigger", data: { label: "Schedule", config: { triggerType: "Schedule", scheduleCron: "0 9 * * 1", scheduleTimezone: "UTC" } } });
+    expect(def.nodes[1]?.data.config).toEqual({ actionType: "web3/transfer-token", network: "84532", tokenConfig: USDC.toLowerCase(), amount: "0.01", recipientAddress: RECIPIENT.toLowerCase(), web3Connection: "default" });
+    expect(def.edges).toEqual([{ id: "trigger->payout", source: "trigger", target: "payout" }]);
+    const native = scheduledTransferWorkflow({ name: "n", cron: "0 * * * *", chainId: 84532, recipientAddress: RECIPIENT, amount: "0.001" });
+    expect(native.nodes[1]?.data.config.actionType).toBe("web3/transfer-funds");
+    expect(() => scheduledTransferWorkflow({ name: "n", cron: "nope", chainId: 84532, recipientAddress: RECIPIENT, amount: "1" })).toThrow(/cron/);
+  });
+
+  it("creates, lists, executes and waits for a workflow run", async () => {
+    const { scheduledTransferWorkflow } = await import("../src/workflows.ts");
+    const { client, mock } = setup({ workflowWaitIncomplete: 2 });
+    const created = await client.createWorkflow(scheduledTransferWorkflow({ name: "landed:a", cron: "0 9 * * 1", chainId: 84532, recipientAddress: RECIPIENT, amount: "0.01", tokenAddress: USDC }));
+    expect(created.id).toBe("wf_1");
+    expect((await client.listWorkflows()).map((w) => w.name)).toEqual(["landed:a"]);
+    const run = await client.executeWorkflow(created.id);
+    expect(run).toEqual({ executionId: "exec_1", status: "running" });
+    const result = await client.waitForWorkflowExecution(run.executionId, { timeoutMs: 5000 });
+    expect(result.completed).toBe(true);
+    expect(result.status).toBe("success");
+    expect(result.transactionHashes[0]).toMatchObject({ chainId: 84532, receiptStatus: "success", verified: true });
+    expect(mock.calls.filter((c) => c.path.endsWith("/wait"))).toHaveLength(3);
+    expect(mock.calls.filter((c) => c.path.endsWith("/wait"))[0]!.path).toBe("/api/workflows/executions/exec_1/wait");
+  });
+
+  it("returns, not throws, a run that ended in error so the caller decides", async () => {
+    const { client } = setup({ workflowRunStatus: "error" });
+    const created = await client.createWorkflow({ name: "w", nodes: [], edges: [] });
+    const run = await client.executeWorkflow(created.id);
+    const result = await client.waitForWorkflowExecution(run.executionId);
+    expect(result.completed).toBe(true);
+    expect(result.status).toBe("error");
+    expect(result.error).toMatch(/error/);
+    expect(result.transactionHashes).toEqual([]);
+  });
+
+  it("stops waiting at the deadline with completed=false", async () => {
+    const { client, clock } = setup({ workflowWaitIncomplete: 50 });
+    const created = await client.createWorkflow({ name: "w", nodes: [], edges: [] });
+    const run = await client.executeWorkflow(created.id);
+    const pending = client.waitForWorkflowExecution(run.executionId, { deadlineMs: 0 });
+    clock.advance(1);
+    const result = await pending;
+    expect(result.completed).toBe(false);
+    expect(result.status).toBe("running");
+  });
+});
+
 describe("transferAndVerify (the whole safe sequence)", () => {
   it("simulates, broadcasts under a derived key, waits, and returns proof", async () => {
     const { client, mock, events } = setup({ sponsored: true });

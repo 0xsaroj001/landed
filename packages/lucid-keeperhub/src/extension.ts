@@ -6,11 +6,14 @@ import {
   PreflightFailed,
   canonicalTransferBody,
   deriveTransferKey,
+  isValidCron,
+  scheduledTransferWorkflow,
   type ChainInput,
   type ExecutionState,
   type Receipt,
   type SimulationResult,
   type WaitOptions,
+  type WorkflowTransactionHash,
 } from "@landed/keeperhub-client";
 import type { AgentManifest, BuildContext, Extension } from "@lucid-agents/types/core";
 import { LandedError } from "./errors.ts";
@@ -67,6 +70,30 @@ export interface DryRun {
   idempotencyKey: string;
 }
 
+export interface ScheduleIntent extends TransferIntent {
+  /** Five-field cron. KeeperHub's scheduler runs the payout on it. */
+  cron: string;
+  timezone?: string | undefined;
+  /** Also run the workflow once right now and wait for its receipt. */
+  runNow?: boolean | undefined;
+}
+
+export interface ScheduledPayout {
+  reference: string;
+  workflowId: string;
+  name: string;
+  cron: string;
+  timezone: string | undefined;
+  /** False when a workflow for this reference already existed and was reused. */
+  created: boolean;
+  chainId: string;
+  recipientAddress: string;
+  amount: string;
+  tokenAddress: string | undefined;
+  firstRun: { executionId: string; status: string; transactionHashes: WorkflowTransactionHash[] } | undefined;
+  timeline: StageEntry[];
+}
+
 export interface KeeperHubCapability {
   uri: string;
   description: string;
@@ -84,6 +111,11 @@ export interface KeeperHubRuntime {
   dryRun(intent: TransferIntent): Promise<DryRun>;
   /** Policy → simulate → broadcast under a derived key → wait → verified receipt, or throw. */
   transfer(intent: TransferIntent): Promise<LandedProof>;
+  /**
+   * Author a KeeperHub workflow (Schedule trigger → transfer) so the payout recurs without this agent
+   * in the loop. One workflow per reference: a repeat call returns the existing one.
+   */
+  schedule(intent: ScheduleIntent): Promise<ScheduledPayout>;
   /** KeeperHub's view of an execution this agent started. */
   execution(executionId: string): Promise<ExecutionState>;
   /** The descriptor advertised in the agent card. */
@@ -244,6 +276,113 @@ export function keeperhub(options: KeeperHubExtensionOptions): KeeperHubExtensio
         receipt: verified.receipt,
         timeline: record.stages,
       };
+    },
+
+    async schedule(intent) {
+      const reference = requireReference(intent.reference);
+      const cron = intent.cron.trim();
+      if (!isValidCron(cron)) {
+        throw new LandedError("invalid_request", `invalid cron expression "${intent.cron}" (five fields, e.g. "0 9 * * 1")`, { reference });
+      }
+      const body = canonicalTransferBody(intent);
+      const record = log.start({
+        reference,
+        entrypoint: intent.entrypoint,
+        chainId: body.chainId,
+        recipientAddress: body.recipientAddress,
+        amount: body.amount,
+        tokenAddress: body.tokenAddress,
+      });
+      const decision = evaluateTransfer(policy, body);
+      if (!decision.allowed) {
+        log.push(record, "policy_denied", { rule: decision.rule, reason: decision.reason });
+        log.finish(record, "policy_denied", { code: "policy_denied", message: decision.reason });
+        throw new LandedError("policy_denied", decision.reason, { reference, details: { rule: decision.rule } });
+      }
+      log.push(record, "policy_ok");
+
+      const name = `landed:${reference}`;
+      try {
+        const existing = (await client.listWorkflows()).find((w) => w.name === name);
+        let workflowId: string;
+        let created: boolean;
+        if (existing) {
+          workflowId = existing.id;
+          created = false;
+          log.push(record, "workflow_reused", { workflowId });
+        } else {
+          const workflow = await client.createWorkflow(
+            scheduledTransferWorkflow({
+              name,
+              description: `Landed recurring payout for reference ${reference}`,
+              cron,
+              timezone: intent.timezone,
+              chainId: body.chainId,
+              recipientAddress: body.recipientAddress,
+              amount: body.amount,
+              tokenAddress: body.tokenAddress,
+              enabled: true,
+            }),
+          );
+          workflowId = workflow.id;
+          created = true;
+          log.push(record, "workflow_created", { workflowId, cron });
+        }
+        record.executionId = undefined;
+
+        let firstRun: ScheduledPayout["firstRun"];
+        if (intent.runNow) {
+          const started = await client.executeWorkflow(workflowId);
+          const result = await client.waitForWorkflowExecution(started.executionId, { deadlineMs: wait.maxWaitMs ?? 180_000 });
+          record.executionId = result.executionId;
+          record.transactionHash = result.transactionHashes[0]?.hash;
+          record.transactionLink = result.transactionHashes[0]?.link;
+          log.push(record, "workflow_run", {
+            executionId: result.executionId,
+            status: result.status,
+            completed: result.completed,
+            hashes: result.transactionHashes.map((h) => h.hash),
+          });
+          if (!result.completed) {
+            log.finish(record, "unconfirmed", { code: "execution_unconfirmed", message: `workflow run ${result.executionId} still ${result.status}` });
+            throw new LandedError("execution_unconfirmed", `workflow run ${result.executionId} still ${result.status} after the wait budget. Retry with the same reference, never a new one.`, {
+              reference,
+              details: { workflowId, executionId: result.executionId },
+            });
+          }
+          const unverified = result.transactionHashes.filter((h) => h.verified === false || (h.receiptStatus !== undefined && h.receiptStatus !== "success"));
+          if (result.status !== "success" || unverified.length > 0) {
+            log.finish(record, "failed", { code: "execution_failed", message: result.error ?? `workflow run ${result.status}` });
+            throw new LandedError("execution_failed", `workflow run ${result.executionId} ended ${result.status}${result.error ? `: ${result.error}` : ""}`, {
+              reference,
+              details: { workflowId, executionId: result.executionId, transactionHashes: result.transactionHashes },
+            });
+          }
+          firstRun = { executionId: result.executionId, status: result.status, transactionHashes: result.transactionHashes };
+        }
+
+        log.finish(record, firstRun ? "landed" : "scheduled");
+        return {
+          reference,
+          workflowId,
+          name,
+          cron,
+          timezone: intent.timezone,
+          created,
+          chainId: body.chainId,
+          recipientAddress: body.recipientAddress,
+          amount: body.amount,
+          tokenAddress: body.tokenAddress,
+          firstRun,
+          timeline: record.stages,
+        };
+      } catch (error) {
+        if (error instanceof LandedError) {
+          throw error;
+        }
+        log.finish(record, "error", { code: "keeperhub_error", message: String(error) });
+        throw wrapKeeperHubError(error, reference);
+      }
     },
 
     execution(executionId) {

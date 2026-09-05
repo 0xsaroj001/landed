@@ -41,7 +41,15 @@ export type {
   SimulationResult,
   TransferRequest,
   VerifiedExecution,
+  WorkflowDefinition,
+  WorkflowEdge,
+  WorkflowExecutionResult,
+  WorkflowNode,
+  WorkflowSummary,
+  WorkflowTransactionHash,
 } from "./types.ts";
+export { isValidCron, scheduledTransferWorkflow } from "./workflows.ts";
+export type { ScheduledTransferWorkflowInput } from "./workflows.ts";
 
 export const KEEPERHUB_CHAINS = {
   ETHEREUM: "1",

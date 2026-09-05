@@ -7,8 +7,10 @@ import {
   LandedError,
   keeperhub,
   keeperhubDryRunEntrypoint,
+  keeperhubScheduleEntrypoint,
   keeperhubStatusEntrypoint,
   keeperhubTransferEntrypoint,
+  keeperhubWatchEntrypoint,
   type ExecutionPolicy,
 } from "../src/index.ts";
 
@@ -232,6 +234,170 @@ describe("keeperhub() extension on a real Lucid runtime", () => {
     const res = await invoke(agent as unknown as Built, "payout", { reference: "r", recipientAddress: RECIPIENT, amount: "0.01" });
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(res.text).toMatch(/keeperhub\(\)/);
+  });
+
+  it("recovers after a seller restart: the same reference replays the broadcast and finds the receipt", async () => {
+    // One KeeperHub, two agent processes. The first gives up while the transaction is unconfirmed.
+    const mock = createMockKeeperHub({ executeStatus: "unconfirmed", statusScript: ["unconfirmed", "unconfirmed", "completed"], nonTerminalHint: 2 });
+    const build = async () => {
+      const clock = virtualClock();
+      const client = new KeeperHubClient({ apiKey: "kh_test", baseUrl: "https://keeperhub.test", fetch: mock.fetch, sleep: clock.sleep, now: clock.now });
+      const agent = await createAgent({ name: "restarting-agent", version: "1.0.0" })
+        .use(keeperhub({ client, policy: { chains: [84532], tokens: [USDC] }, wait: { maxWaitMs: 3000 } }))
+        .use(http())
+        .build();
+      agent.entrypoints.add(keeperhubTransferEntrypoint({ key: "payout", chainId: 84532, tokenAddress: USDC }));
+      return agent;
+    };
+    const before = await build();
+    const first = await invoke(before, "payout", { reference: "inv-restart", recipientAddress: RECIPIENT, amount: "0.01" });
+    expect(first.status).toBeGreaterThanOrEqual(400);
+    expect(first.text).toMatch(/execution_unconfirmed/);
+    expect(before.keeperhub.log.get("inv-restart")?.outcome).toBe("unconfirmed");
+
+    const after = await build(); // fresh process: empty log, same KeeperHub
+    const second = await invoke(after, "payout", { reference: "inv-restart", recipientAddress: RECIPIENT, amount: "0.01" });
+    expect(second.status).toBe(200);
+    const output = second.body.output as Record<string, unknown>;
+    expect(output.executionId).toBe("direct_1");
+    expect(output.replayed).toBe(true);
+    expect(mock.executions.size).toBe(1);
+    expect(broadcasts(mock)).toHaveLength(2);
+    expect(new Set(broadcasts(mock).map((c) => c.headers["idempotency-key"])).size).toBe(1);
+  });
+
+  it("lets a subscriber follow a reference stage by stage", async () => {
+    const { agent } = await buildAgent();
+    const seen: string[] = [];
+    const unsubscribe = agent.keeperhub.log.subscribe("inv-follow", (event) => {
+      seen.push(event.type === "stage" ? event.entry.stage : `finished:${event.record.outcome}`);
+    });
+    await invoke(agent, "payout", { reference: "inv-follow", recipientAddress: RECIPIENT, amount: "0.01" });
+    unsubscribe();
+    expect(seen).toEqual(["received", "policy_ok", "simulated", "broadcast", "accepted", "landed", "finished:landed"]);
+  });
+
+  it("streams a finished reference's stages over SSE and ends with the record", async () => {
+    const { agent } = await buildAgent();
+    agent.entrypoints.add(keeperhubWatchEntrypoint({ key: "watch" }));
+    await invoke(agent, "payout", { reference: "inv-stream", recipientAddress: RECIPIENT, amount: "0.01" });
+    const route = agent.http.routes.find((r) => r.id === "stream")!;
+    const res = await route.handle(
+      new Request(`${ORIGIN}/entrypoints/watch/stream`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: { reference: "inv-stream" } }),
+      }),
+      { key: "watch" },
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    for (const stage of ["received", "policy_ok", "simulated", "broadcast", "accepted", "landed"]) {
+      expect(text).toContain(`"stage":"${stage}"`);
+    }
+    expect(text).toContain('"control":"finished"');
+    expect(text).toContain('"outcome":"landed"');
+  });
+
+  it("streams live stages while an execution is in progress", async () => {
+    const { agent } = await buildAgent();
+    agent.entrypoints.add(keeperhubWatchEntrypoint({ key: "watch", timeoutMs: 5000 }));
+    const log = agent.keeperhub.log;
+    const record = log.start({ reference: "inv-live", chainId: "84532", recipientAddress: RECIPIENT.toLowerCase(), amount: "0.01", tokenAddress: USDC.toLowerCase() });
+    const route = agent.http.routes.find((r) => r.id === "stream")!;
+    const pending = route
+      .handle(
+        new Request(`${ORIGIN}/entrypoints/watch/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: { reference: "inv-live" } }),
+        }),
+        { key: "watch" },
+      )
+      .then((res) => res.text());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    log.push(record, "policy_ok");
+    log.push(record, "simulated", { gasEstimate: "1" });
+    record.transactionHash = "0xabc";
+    log.push(record, "landed", { transactionHash: "0xabc" });
+    log.finish(record, "landed");
+    const text = await pending;
+    expect(text).toContain('"stage":"received"');
+    expect(text).toContain('"stage":"simulated"');
+    expect(text).toContain('"control":"finished"');
+    expect(text).toContain('"transactionHash":"0xabc"');
+  });
+
+  it("reports an unknown reference on the stream as an error envelope", async () => {
+    const { agent } = await buildAgent();
+    agent.entrypoints.add(keeperhubWatchEntrypoint());
+    const route = agent.http.routes.find((r) => r.id === "stream")!;
+    const res = await route.handle(
+      new Request(`${ORIGIN}/entrypoints/watch/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: { reference: "nope" } }) }),
+      { key: "watch" },
+    );
+    const text = await res.text();
+    expect(text).toContain('"code":"not_found"');
+  });
+
+  it("subscribe authors a Schedule → transfer workflow through KeeperHub, once per reference", async () => {
+    const { agent, mock } = await buildAgent();
+    agent.entrypoints.add(keeperhubScheduleEntrypoint({ key: "subscribe", chainId: "base-sepolia", tokenAddress: USDC }));
+    const first = await invoke(agent, "subscribe", { reference: "payroll-sep", recipientAddress: RECIPIENT, amount: "0.01", cron: "0 9 * * 1", timezone: "UTC" });
+    expect(first.status).toBe(200);
+    expect(first.body.output).toMatchObject({ workflowId: "wf_1", name: "landed:payroll-sep", created: true, cron: "0 9 * * 1", timezone: "UTC" });
+    const stored = mock.workflows.get("wf_1") as unknown as { nodes: Array<{ type: string; data: { config: Record<string, unknown> } }>; edges: unknown[]; enabled: boolean };
+    expect(stored.enabled).toBe(true);
+    expect(stored.nodes[0]?.data.config).toEqual({ triggerType: "Schedule", scheduleCron: "0 9 * * 1", scheduleTimezone: "UTC" });
+    expect(stored.nodes[1]?.data.config).toEqual({
+      actionType: "web3/transfer-token",
+      network: "84532",
+      tokenConfig: USDC.toLowerCase(),
+      amount: "0.01",
+      recipientAddress: RECIPIENT.toLowerCase(),
+      web3Connection: "default",
+    });
+    expect(stored.edges).toHaveLength(1);
+    expect(agent.keeperhub.log.get("payroll-sep")?.outcome).toBe("scheduled");
+
+    const again = await invoke(agent, "subscribe", { reference: "payroll-sep", recipientAddress: RECIPIENT, amount: "0.01", cron: "0 9 * * 1" });
+    expect(again.status).toBe(200);
+    expect(again.body.output).toMatchObject({ workflowId: "wf_1", created: false });
+    expect(mock.workflows.size).toBe(1);
+  });
+
+  it("subscribe with runNow executes the workflow once and returns verified hashes", async () => {
+    const { agent, mock } = await buildAgent({ workflowWaitIncomplete: 1 });
+    agent.entrypoints.add(keeperhubScheduleEntrypoint({ key: "subscribe", chainId: 84532, tokenAddress: USDC }));
+    const res = await invoke(agent, "subscribe", { reference: "payroll-now", recipientAddress: RECIPIENT, amount: "0.01", cron: "*/30 * * * *", runNow: true });
+    expect(res.status).toBe(200);
+    const output = res.body.output as { firstRun: { executionId: string; status: string; transactionHashes: Array<{ hash: string; verified: boolean }> } };
+    expect(output.firstRun.executionId).toBe("exec_1");
+    expect(output.firstRun.status).toBe("success");
+    expect(output.firstRun.transactionHashes[0]).toMatchObject({ verified: true, receiptStatus: "success" });
+    expect(mock.calls.filter((c) => c.path.endsWith("/wait"))).toHaveLength(2);
+    expect(agent.keeperhub.log.get("payroll-now")?.outcome).toBe("landed");
+  });
+
+  it("subscribe refuses a bad cron and a policy violation before touching KeeperHub", async () => {
+    const { agent, mock } = await buildAgent();
+    agent.entrypoints.add(keeperhubScheduleEntrypoint({ key: "subscribe", chainId: 84532, tokenAddress: USDC }));
+    const badCron = await invoke(agent, "subscribe", { reference: "bad-cron", recipientAddress: RECIPIENT, amount: "0.01", cron: "every monday" });
+    expect(badCron.status).toBeGreaterThanOrEqual(400);
+    expect(badCron.text).toMatch(/invalid cron/);
+    const tooMuch = await invoke(agent, "subscribe", { reference: "too-much", recipientAddress: RECIPIENT, amount: "9", cron: "0 9 * * 1" });
+    expect(tooMuch.status).toBeGreaterThanOrEqual(400);
+    expect(tooMuch.text).toMatch(/policy_denied/);
+    expect(mock.workflows.size).toBe(0);
+  });
+
+  it("subscribe with runNow surfaces a failed workflow run instead of settling", async () => {
+    const { agent } = await buildAgent({ workflowRunStatus: "error" });
+    agent.entrypoints.add(keeperhubScheduleEntrypoint({ key: "subscribe", chainId: 84532, tokenAddress: USDC }));
+    const res = await invoke(agent, "subscribe", { reference: "payroll-fail", recipientAddress: RECIPIENT, amount: "0.01", cron: "0 9 * * 1", runNow: true });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.text).toMatch(/execution_failed/);
+    expect(agent.keeperhub.log.get("payroll-fail")?.outcome).toBe("failed");
   });
 
   it("supports fixed recipient and amount so the caller cannot redirect funds", async () => {

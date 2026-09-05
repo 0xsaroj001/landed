@@ -24,7 +24,7 @@ describe("payout agent (replay mode, no network)", () => {
       capabilities?: { extensions?: Array<{ uri: string; params: Record<string, unknown> }> };
     };
     expect(card.name).toBe("landed-payout-agent");
-    expect(Object.keys(card.entrypoints).sort()).toEqual(["dry-run", "execution", "payout"]);
+    expect(Object.keys(card.entrypoints).sort()).toEqual(["dry-run", "execution", "payout", "subscribe", "watch"]);
     const descriptor = card.capabilities?.extensions?.find((e) => e.uri === "urn:landed:keeperhub-execution:v1");
     expect(descriptor?.params).toMatchObject({ executionLayer: "keeperhub", keeperhub: "https://keeperhub.mock" });
   });

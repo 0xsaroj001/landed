@@ -1,0 +1,10 @@
+{
+  "name": "@landed/ledger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@landed/keeperhub-client": "0.1.0",
+    "dotenv": "^17.0.0"
+  }
+}

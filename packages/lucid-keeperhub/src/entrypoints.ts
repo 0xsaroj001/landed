@@ -2,7 +2,7 @@ import type { ChainInput } from "@landed/keeperhub-client";
 import type { EntrypointDef } from "@lucid-agents/types/core";
 import { z } from "zod";
 import { LandedError } from "./errors.ts";
-import type { KeeperHubRuntime, LandedProof } from "./extension.ts";
+import type { KeeperHubRuntime, LandedProof, ScheduledPayout } from "./extension.ts";
 
 export const referenceSchema = z
   .string()
@@ -215,6 +215,115 @@ export function keeperhubStatusEntrypoint(options: { key?: string | undefined } 
       return { output: record ? { found: true, record: { ...record } } : { found: false } };
     },
   };
+}
+
+const scheduleInputSchema = z.object({
+  reference: referenceSchema,
+  recipientAddress: addressSchema.optional(),
+  amount: amountSchema.optional(),
+  cron: z.string().trim().min(9).max(120).describe('Five-field cron, e.g. "0 9 * * 1" for Mondays at 09:00'),
+  timezone: z.string().trim().min(1).max(64).optional().describe("IANA timezone, default UTC"),
+  runNow: z.boolean().optional().describe("Also run the payout once immediately and return its receipt"),
+});
+
+const workflowHashSchema = z.object({
+  hash: z.string(),
+  chainId: z.number().optional(),
+  receiptStatus: z.string().optional(),
+  verified: z.boolean().optional(),
+  link: z.string().optional(),
+});
+
+const scheduleOutputSchema = z.object({
+  reference: z.string(),
+  workflowId: z.string(),
+  name: z.string(),
+  cron: z.string(),
+  timezone: z.string().optional(),
+  created: z.boolean(),
+  chainId: z.string(),
+  recipientAddress: z.string(),
+  amount: z.string(),
+  tokenAddress: z.string().optional(),
+  firstRun: z
+    .object({ executionId: z.string(), status: z.string(), transactionHashes: z.array(workflowHashSchema) })
+    .optional(),
+  timeline: z.array(stageEntrySchema),
+});
+
+export interface ScheduleEntrypointOptions extends TransferEntrypointOptions {
+  /** Allow the caller to request an immediate first run. Default true. */
+  allowRunNow?: boolean | undefined;
+}
+
+/**
+ * A standing order: the buyer pays once, KeeperHub's scheduler runs the payout on the cron
+ * with no agent in the loop. Uses the agent-authored workflow surface (POST /api/workflows/create).
+ */
+export function keeperhubScheduleEntrypoint(
+  options: ScheduleEntrypointOptions,
+): EntrypointDef<typeof scheduleInputSchema, typeof scheduleOutputSchema> {
+  const key = options.key ?? "subscribe";
+  const allowRunNow = options.allowRunNow ?? true;
+  const def: EntrypointDef<typeof scheduleInputSchema, typeof scheduleOutputSchema> = {
+    key,
+    description:
+      options.description ??
+      `Create a recurring ${options.tokenAddress ? "token" : "native"} payout on chain ${String(options.chainId)}: KeeperHub's scheduler executes it on your cron, with the same dry run, retries and audit trail as a one-off. One workflow per reference.`,
+    input: scheduleInputSchema,
+    output: scheduleOutputSchema,
+    metadata: { ...(options.metadata ?? {}), landed: { executionLayer: "keeperhub", surface: "agent-authored-workflow", chainId: String(options.chainId) } },
+    handler: async (ctx) => {
+      const keeperhub = runtimeOf(ctx.runtime);
+      const recipientAddress = options.recipientAddress ?? ctx.input.recipientAddress;
+      const amount = options.amount ?? ctx.input.amount;
+      if (!recipientAddress || !amount) {
+        throw new LandedError("invalid_request", "recipientAddress and amount are required", { reference: ctx.input.reference });
+      }
+      const scheduled: ScheduledPayout = await keeperhub.schedule({
+        reference: ctx.input.reference,
+        chainId: options.chainId,
+        recipientAddress,
+        amount,
+        tokenAddress: options.tokenAddress,
+        cron: ctx.input.cron,
+        timezone: ctx.input.timezone,
+        runNow: allowRunNow && ctx.input.runNow === true,
+        entrypoint: key,
+      });
+      const output: z.infer<typeof scheduleOutputSchema> = {
+        reference: scheduled.reference,
+        workflowId: scheduled.workflowId,
+        name: scheduled.name,
+        cron: scheduled.cron,
+        created: scheduled.created,
+        chainId: scheduled.chainId,
+        recipientAddress: scheduled.recipientAddress,
+        amount: scheduled.amount,
+        timeline: scheduled.timeline.map((s) => (s.detail ? { stage: s.stage, at: s.at, detail: s.detail } : { stage: s.stage, at: s.at })),
+      };
+      if (scheduled.timezone !== undefined) output.timezone = scheduled.timezone;
+      if (scheduled.tokenAddress !== undefined) output.tokenAddress = scheduled.tokenAddress;
+      if (scheduled.firstRun) {
+        output.firstRun = {
+          executionId: scheduled.firstRun.executionId,
+          status: scheduled.firstRun.status,
+          transactionHashes: scheduled.firstRun.transactionHashes.map((h) => ({
+            hash: h.hash,
+            ...(h.chainId !== undefined ? { chainId: h.chainId } : {}),
+            ...(h.receiptStatus !== undefined ? { receiptStatus: h.receiptStatus } : {}),
+            ...(h.verified !== undefined ? { verified: h.verified } : {}),
+            ...(h.link !== undefined ? { link: h.link } : {}),
+          })),
+        };
+      }
+      return { output };
+    },
+  };
+  if (options.price !== undefined) {
+    def.price = options.price;
+  }
+  return def;
 }
 
 function runtimeOf(runtime: unknown): KeeperHubRuntime {

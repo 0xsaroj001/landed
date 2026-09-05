@@ -147,3 +147,61 @@ export type ClientEvent =
   | { type: "verified"; execution: VerifiedExecution };
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** Workflow API shapes (https://docs.keeperhub.com/api/workflows). */
+export interface WorkflowNode {
+  id: string;
+  type: "trigger" | "action";
+  data: { label: string; config: Record<string, unknown> };
+}
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+}
+
+export interface WorkflowDefinition {
+  name: string;
+  description?: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  enabled?: boolean;
+  projectId?: string;
+  tagId?: string;
+}
+
+export interface WorkflowSummary {
+  id: string;
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  visibility?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  raw: Record<string, unknown>;
+}
+
+export interface WorkflowTransactionHash {
+  hash: string;
+  chainId?: number;
+  receiptStatus?: string;
+  verified?: boolean;
+  link?: string;
+  raw: Record<string, unknown>;
+}
+
+/** GET /api/workflows/executions/{id}/wait */
+export interface WorkflowExecutionResult {
+  executionId: string;
+  /** "success", "error", "system_error", "cancelled", or a non-terminal status when `completed` is false. */
+  status: string;
+  completed: boolean;
+  transactionHashes: WorkflowTransactionHash[];
+  output: unknown;
+  error: string | null;
+  gasUsedWei: string | null;
+  completedAt: string | null;
+  raw: Record<string, unknown>;
+}

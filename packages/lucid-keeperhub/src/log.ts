@@ -9,9 +9,12 @@ export type Stage =
   | "landed"
   | "failed"
   | "unconfirmed"
+  | "workflow_created"
+  | "workflow_reused"
+  | "workflow_run"
   | "error";
 
-export type Outcome = "landed" | "policy_denied" | "preflight_failed" | "failed" | "unconfirmed" | "error";
+export type Outcome = "landed" | "scheduled" | "policy_denied" | "preflight_failed" | "failed" | "unconfirmed" | "error";
 
 export interface StageEntry {
   stage: Stage;
@@ -40,14 +43,22 @@ export interface LandedRecord {
   stages: StageEntry[];
 }
 
+export type LogEvent =
+  | { type: "stage"; record: LandedRecord; entry: StageEntry }
+  | { type: "finished"; record: LandedRecord };
+
+export type LogListener = (event: LogEvent) => void;
+
 /**
  * Bounded in-memory record of every execution this agent attempted, keyed by the
- * caller's reference. KeeperHub keeps the authoritative history; this is the
- * agent-side view a buyer can query without a KeeperHub credential.
+ * caller's reference, with subscriptions so a stream can follow a reference live.
+ * KeeperHub keeps the authoritative history; this is the agent-side view a buyer
+ * can query without a KeeperHub credential.
  */
 export class ExecutionLog {
   private readonly records = new Map<string, LandedRecord>();
   private readonly order: string[] = [];
+  private readonly listeners = new Map<string, Set<LogListener>>();
   private readonly maxEntries: number;
   private readonly clock: () => Date;
 
@@ -91,6 +102,7 @@ export class ExecutionLog {
         const evicted = this.order.shift();
         if (evicted !== undefined) {
           this.records.delete(evicted);
+          this.listeners.delete(evicted);
         }
       }
     }
@@ -102,6 +114,7 @@ export class ExecutionLog {
   push(record: LandedRecord, stage: Stage, detail?: Record<string, unknown>): StageEntry {
     const entry: StageEntry = detail ? { stage, at: this.now(), detail } : { stage, at: this.now() };
     record.stages.push(entry);
+    this.emit(record.reference, { type: "stage", record, entry });
     return entry;
   }
 
@@ -111,6 +124,7 @@ export class ExecutionLog {
     if (error) {
       record.error = error;
     }
+    this.emit(record.reference, { type: "finished", record });
     return record;
   }
 
@@ -127,8 +141,38 @@ export class ExecutionLog {
       .filter((record): record is LandedRecord => record !== undefined);
   }
 
+  /** Follow one reference. Returns an unsubscribe function. */
+  subscribe(reference: string, listener: LogListener): () => void {
+    let set = this.listeners.get(reference);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(reference, set);
+    }
+    set.add(listener);
+    return () => {
+      set?.delete(listener);
+      if (set && set.size === 0) {
+        this.listeners.delete(reference);
+      }
+    };
+  }
+
   get size(): number {
     return this.records.size;
+  }
+
+  private emit(reference: string, event: LogEvent): void {
+    const set = this.listeners.get(reference);
+    if (!set) {
+      return;
+    }
+    for (const listener of [...set]) {
+      try {
+        listener(event);
+      } catch {
+        // a broken subscriber must not break the execution path
+      }
+    }
   }
 
   private now(): string {

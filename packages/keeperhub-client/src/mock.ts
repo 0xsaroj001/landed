@@ -42,6 +42,21 @@ export interface MockOptions {
   /** Broadcast without a transaction hash (e.g. failed before submission). */
   withoutHash?: boolean;
   sponsored?: boolean;
+  /** Terminal status of workflow runs. Default "success". */
+  workflowRunStatus?: "success" | "error" | "system_error" | "cancelled";
+  /** Number of /wait calls that answer `completed: false` before the terminal answer. */
+  workflowWaitIncomplete?: number;
+}
+
+interface StoredWorkflow extends Record<string, unknown> {
+  id: string;
+  name: string;
+}
+
+interface StoredWorkflowRun {
+  executionId: string;
+  workflowId: string;
+  waits: number;
 }
 
 interface StoredExecution {
@@ -64,6 +79,8 @@ export function createMockKeeperHub(options: MockOptions = {}) {
   const calls: MockCall[] = [];
   const executions = new Map<string, StoredExecution>();
   const idempotency = new Map<string, IdempotencyRecord>();
+  const workflows = new Map<string, StoredWorkflow>();
+  const workflowRuns = new Map<string, StoredWorkflowRun>();
   let counter = 0;
   let rateLimitLeft = options.rateLimitAttempts ?? 0;
   let serverErrorsLeft = options.serverErrorAttempts ?? 0;
@@ -89,6 +106,59 @@ export function createMockKeeperHub(options: MockOptions = {}) {
     }
     if (method === "GET" && url.pathname === "/api/keys") {
       return json(200, []);
+    }
+    if (method === "GET" && url.pathname === "/api/workflows") {
+      return json(200, [...workflows.values()]);
+    }
+    if (method === "POST" && url.pathname === "/api/workflows/create") {
+      const def = (body ?? {}) as Record<string, unknown>;
+      if (typeof def.name !== "string" || !Array.isArray(def.nodes) || !Array.isArray(def.edges)) {
+        return json(400, { error: "invalid_input", detail: "name, nodes and edges are required" });
+      }
+      const workflow: StoredWorkflow = {
+        ...def,
+        id: `wf_${workflows.size + 1}`,
+        name: def.name,
+        visibility: "private",
+        enabled: def.enabled ?? true,
+        createdAt: "2026-09-06T10:00:00Z",
+        updatedAt: "2026-09-06T10:00:00Z",
+      };
+      workflows.set(workflow.id, workflow);
+      return json(201, workflow);
+    }
+    const executeMatch = /^\/api\/workflows\/([^/]+)\/execute$/.exec(url.pathname);
+    if (method === "POST" && executeMatch) {
+      const workflowId = decodeURIComponent(executeMatch[1]!);
+      if (!workflows.has(workflowId)) {
+        return json(404, { error: "not_found", detail: "Workflow not found" });
+      }
+      const run: StoredWorkflowRun = { executionId: `exec_${workflowRuns.size + 1}`, workflowId, waits: 0 };
+      workflowRuns.set(run.executionId, run);
+      return json(200, { executionId: run.executionId, status: "running" });
+    }
+    const waitMatch = /^\/api\/workflows\/executions\/([^/]+)\/wait$/.exec(url.pathname);
+    if (method === "GET" && waitMatch) {
+      const run = workflowRuns.get(decodeURIComponent(waitMatch[1]!));
+      if (!run) {
+        return json(404, { error: "not_found", detail: "Execution not found" });
+      }
+      run.waits += 1;
+      if (run.waits <= (options.workflowWaitIncomplete ?? 0)) {
+        return json(200, { executionId: run.executionId, status: "running", completed: false });
+      }
+      const status = options.workflowRunStatus ?? "success";
+      const hash = `0x${run.executionId.replace(/\D/g, "").padStart(64, "b")}`;
+      return json(200, {
+        executionId: run.executionId,
+        status,
+        completed: true,
+        transactionHashes: status === "success" ? [{ hash, chainId: 84532, receiptStatus: "success", verified: true }] : [],
+        output: null,
+        error: status === "success" ? null : `workflow ${status}`,
+        gasUsedWei: null,
+        completedAt: "2026-09-06T10:00:20Z",
+      });
     }
     if (method === "GET" && url.pathname === "/api/user") {
       return json(200, { id: "user_mock", email: "mock@wallet.keeperhub.com", providerId: "siwe", walletAddress: options.walletAddress ?? "0x1111111111111111111111111111111111111111" });
@@ -237,7 +307,7 @@ export function createMockKeeperHub(options: MockOptions = {}) {
     return json(404, { error: "not_found", detail: `No route ${method} ${url.pathname}` });
   };
 
-  return { fetch: fetchImpl, calls, executions, idempotency };
+  return { fetch: fetchImpl, calls, executions, idempotency, workflows, workflowRuns };
 }
 
 function acceptedBody(execution: StoredExecution): Record<string, unknown> {

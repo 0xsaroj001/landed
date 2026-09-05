@@ -25,6 +25,10 @@ import type {
   SimulationResult,
   TransferRequest,
   VerifiedExecution,
+  WorkflowDefinition,
+  WorkflowExecutionResult,
+  WorkflowSummary,
+  WorkflowTransactionHash,
 } from "./types.ts";
 
 export interface KeeperHubClientOptions {
@@ -252,6 +256,78 @@ export class KeeperHubClient {
     const verified = assertVerified(state, accepted.idempotentReplay);
     this.emit({ type: "verified", execution: verified });
     return verified;
+  }
+
+  /** GET /api/workflows: every workflow of the organization (bare array). */
+  async listWorkflows(): Promise<WorkflowSummary[]> {
+    const res = await this.request("GET", "/api/workflows");
+    const json = await this.json(res);
+    if (!res.ok) {
+      throw this.mapError(res, json);
+    }
+    return (Array.isArray(json) ? json : []).map(parseWorkflowSummary);
+  }
+
+  /** POST /api/workflows/create: an agent-authored workflow (Schedule/Webhook/Event trigger plus actions). */
+  async createWorkflow(definition: WorkflowDefinition): Promise<WorkflowSummary> {
+    const res = await this.request("POST", "/api/workflows/create", { body: definition });
+    const json = await this.json(res);
+    if (!res.ok) {
+      throw this.mapError(res, json);
+    }
+    const summary = parseWorkflowSummary(json);
+    if (!summary.id) {
+      throw new KeeperHubError("KeeperHub created a workflow without an id", { status: res.status, body: json });
+    }
+    return summary;
+  }
+
+  /** POST /api/workflows/{id}/execute: returns immediately with the execution id. */
+  async executeWorkflow(workflowId: string, input: Record<string, unknown> = {}): Promise<{ executionId: string; status: string }> {
+    const res = await this.request("POST", `/api/workflows/${encodeURIComponent(workflowId)}/execute`, { body: { input } });
+    const json = await this.json(res);
+    if (!res.ok) {
+      throw this.mapError(res, json);
+    }
+    const record = asRecord(json);
+    if (typeof record.executionId !== "string") {
+      throw new KeeperHubError("KeeperHub started a workflow run without an executionId", { status: res.status, body: json });
+    }
+    return { executionId: record.executionId, status: typeof record.status === "string" ? record.status : "running" };
+  }
+
+  /**
+   * GET /api/workflows/executions/{id}/wait: server-side long poll (timeoutMs capped at 60 s).
+   * Loops until `completed` or the deadline. A run that ends in anything but "success" is returned, not thrown.
+   */
+  async waitForWorkflowExecution(
+    executionId: string,
+    options: { deadlineMs?: number | undefined; timeoutMs?: number | undefined } = {},
+  ): Promise<WorkflowExecutionResult> {
+    const deadlineMs = options.deadlineMs ?? 10 * 60_000;
+    const timeoutMs = Math.min(60_000, Math.max(1000, options.timeoutMs ?? 55_000));
+    const started = this.now();
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      const res = await this.request("GET", `/api/workflows/executions/${encodeURIComponent(executionId)}/wait?timeoutMs=${timeoutMs}`, { attempt });
+      const json = await this.json(res);
+      if (!res.ok) {
+        const error = this.mapError(res, json);
+        if (attempt < this.maxAttempts && (error instanceof RateLimited || res.status >= 500)) {
+          await this.backoff(error instanceof RateLimited ? error.retryAfterSeconds * 1000 : 500 * attempt, "workflow wait retry");
+          continue;
+        }
+        throw error;
+      }
+      const result = parseWorkflowExecution(json, executionId);
+      if (result.completed) {
+        return result;
+      }
+      if (this.now() - started >= deadlineMs) {
+        return result;
+      }
+    }
   }
 
   private async simulate(path: string, body: object): Promise<SimulationResult> {
@@ -524,6 +600,52 @@ export function parseState(json: unknown, res?: Pick<Response, "headers">): Exec
     state.completedAt = record.completedAt;
   }
   return state;
+}
+
+function parseWorkflowSummary(json: unknown): WorkflowSummary {
+  const record = asRecord(json);
+  const summary: WorkflowSummary = {
+    id: typeof record.id === "string" ? record.id : "",
+    name: typeof record.name === "string" ? record.name : "",
+    raw: record,
+  };
+  if (typeof record.description === "string") summary.description = record.description;
+  if (typeof record.enabled === "boolean") summary.enabled = record.enabled;
+  if (typeof record.visibility === "string") summary.visibility = record.visibility;
+  if (typeof record.createdAt === "string") summary.createdAt = record.createdAt;
+  if (typeof record.updatedAt === "string") summary.updatedAt = record.updatedAt;
+  return summary;
+}
+
+function parseWorkflowExecution(json: unknown, executionId: string): WorkflowExecutionResult {
+  const record = asRecord(json);
+  const hashes = Array.isArray(record.transactionHashes) ? record.transactionHashes : [];
+  return {
+    executionId: typeof record.executionId === "string" ? record.executionId : executionId,
+    status: typeof record.status === "string" ? record.status : "unknown",
+    completed: record.completed === true,
+    transactionHashes: hashes.map((h): WorkflowTransactionHash => {
+      if (typeof h === "string") {
+        return { hash: h, raw: { hash: h } };
+      }
+      const r = asRecord(h);
+      const parsed: WorkflowTransactionHash = {
+        hash: typeof r.hash === "string" ? r.hash : typeof r.transactionHash === "string" ? r.transactionHash : "",
+        raw: r,
+      };
+      if (typeof r.chainId === "number") parsed.chainId = r.chainId;
+      if (typeof r.receiptStatus === "string") parsed.receiptStatus = r.receiptStatus;
+      if (typeof r.verified === "boolean") parsed.verified = r.verified;
+      if (typeof r.link === "string") parsed.link = r.link;
+      else if (typeof r.transactionLink === "string") parsed.link = r.transactionLink;
+      return parsed;
+    }),
+    output: record.output ?? null,
+    error: typeof record.error === "string" ? record.error : null,
+    gasUsedWei: typeof record.gasUsedWei === "string" ? record.gasUsedWei : null,
+    completedAt: typeof record.completedAt === "string" ? record.completedAt : null,
+    raw: record,
+  };
 }
 
 function parseReceipt(value: unknown): Receipt {
