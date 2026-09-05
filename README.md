@@ -76,6 +76,17 @@ agent.entrypoints.add(keeperhubTransferEntrypoint({ key: "payout", price: "0.01"
 
 Every call needs a `reference` (invoice id, task id, period). Retrying with the same reference replays the original proof instead of paying twice, at both the Lucid and the KeeperHub layer.
 
+## Error contract and the two idempotency layers
+
+A handler throws instead of returning on anything short of a verified receipt. Lucid turns that into HTTP 500 `{ "error": { "code": "internal_error", "message": "<landed code>: <reason>" } }`; the Landed code is one of `policy_denied`, `preflight_failed`, `execution_failed`, `execution_unconfirmed`, `keeperhub_error`. The free `execution` entrypoint returns the structured record for any `reference` (every stage with timestamps, the KeeperHub execution id, hash, receipt or error).
+
+| Layer | Key | Effect of a retry |
+|---|---|---|
+| Lucid HTTP | `Idempotency-Key` header (20–256 chars; the buyer sends `sha256("landed:" + entrypoint + ":" + reference)`) | the stored response is replayed; the handler does not run |
+| KeeperHub | `sha256(reference|chainId|recipient|amount|token)` | the original execution is replayed with `replayed: true`; no second transfer |
+
+`execution_unconfirmed` means the outcome is unknown, not failed: retry with the same reference and never with a new one.
+
 ## Docs
 
 [HACKATHON.md](HACKATHON.md) (brief, rubric, deadlines) · [PRD.md](PRD.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [PHASES.md](PHASES.md) · [GAPS.md](GAPS.md) · [MEMORY.md](MEMORY.md) · [DEMO.md](DEMO.md)

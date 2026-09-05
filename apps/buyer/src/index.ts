@@ -7,7 +7,7 @@
  *   npm run buyer -- execution --reference inv-42
  */
 import "dotenv/config";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { accountFromPrivateKey, createX402Fetch } from "@lucid-agents/payments";
 import { createPublicClient, formatUnits, http as viemHttp, type Hex } from "viem";
 import { baseSepolia } from "viem/chains";
@@ -62,9 +62,12 @@ const input: Record<string, unknown> = { reference };
 if (args.to) input.recipientAddress = args.to;
 if (args.amount) input.amount = String(args.amount);
 // Lucid's HTTP idempotency key must be 20-256 chars; derive it from the reference so a retry replays.
-const idempotencyKey = createHash("sha256").update(`landed:${entrypoint}:${reference}`).digest("hex");
+// --fresh-key sends a new HTTP key so the handler re-runs and KeeperHub's own replay (replayed: true) shows.
+const idempotencyKey = args["fresh-key"]
+  ? randomBytes(16).toString("hex")
+  : createHash("sha256").update(`landed:${entrypoint}:${reference}`).digest("hex");
 console.log(`invoke     POST ${seller}/entrypoints/${entrypoint}/invoke  reference=${reference}${priced ? `  (x402 ${priced} USD)` : ""}`);
-console.log(`           Idempotency-Key ${idempotencyKey.slice(0, 16)}… (sha256 of the reference)`);
+console.log(`           Idempotency-Key ${idempotencyKey.slice(0, 16)}… (${args["fresh-key"] ? "fresh random key" : "sha256 of the reference"})`);
 
 const started = Date.now();
 const res = await paidFetch(`${seller}/entrypoints/${entrypoint}/invoke`, {
@@ -86,9 +89,13 @@ for (const header of ["payment-response", "x-payment-response", "payment-receipt
 }
 console.log(JSON.stringify(body, null, 2));
 
+const runId = (body as { run_id?: string }).run_id;
+if (runId) {
+  console.log(`run        ${runId}  (same run_id on a retry = Lucid replayed the stored response; the handler did not re-run)`);
+}
 if (res.ok && entrypoint === "payout") {
   const output = (body as { output?: Record<string, unknown> }).output ?? {};
-  console.log(`\nlanded     ${String(output.transactionLink ?? output.transactionHash)}`);
+  console.log(`landed     ${String(output.transactionLink ?? output.transactionHash)}${output.replayed ? "  (KeeperHub replayed the original execution: same reference, no second transfer)" : ""}`);
 }
 
 if (buyerAddress) {
