@@ -1,0 +1,33 @@
+# One-click deploy of the Landed payout agent on Render (free web service).
+# Render dashboard → New → Blueprint → pick this repo → fill the env vars → Apply.
+services:
+  - type: web
+    name: landed-payout-agent
+    runtime: node
+    plan: free
+    buildCommand: npm ci --no-audit --no-fund
+    startCommand: npm run seller
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: PORT
+        value: "10000"
+      - key: AGENT_ORIGIN
+        sync: false # e.g. https://landed-payout-agent.onrender.com
+      - key: KEEPERHUB_API_KEY
+        sync: false # organisation kh_ key (paste in the dashboard, never in git)
+      - key: KEEPERHUB_CHAIN_ID
+        value: "84532"
+      - key: PAYOUT_TOKEN
+        value: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+      - key: PAYOUT_MAX_AMOUNT
+        value: "1"
+      - key: PAYOUT_PRICE
+        value: "0.01"
+      - key: PAYMENTS_RECEIVABLE_ADDRESS
+        sync: false # address that receives the x402 cents (the org wallet is fine)
+      - key: PAYMENTS_FACILITATOR_URL
+        value: "https://x402.org/facilitator"
+      - key: PAYMENTS_NETWORK
+        value: "eip155:84532"
