@@ -11,6 +11,7 @@ Updated 2026-09-06 (early). Plain-language steps for the user: [SETUP-STEPS.md](
 - [x] Bun 1.4 installed for the Lucid upstream test suite
 - [x] Buyer wallet generated into `.env` (`0x8abd6c9DBD4BD6AbdD4377694D19aBcCa55Ae784`, throwaway, testnet only)
 - [x] `render.yaml` blueprint for a one-click public seller
+- [x] Upstream PR to Lucid Agents opened: https://github.com/daydreamsai/lucid-agents/pull/1717 (`@lucid-agents/keeperhub`: 89 tests green with Bun, lint/format/type-check clean, docs page and changeset included)
 
 ## Blocking on the user
 - [ ] KeeperHub organisation `kh_` key in `.env` (Step 1)
@@ -18,7 +19,7 @@ Updated 2026-09-06 (early). Plain-language steps for the user: [SETUP-STEPS.md](
 - [ ] Buyer wallet `0x8abd6c9DBD4BD6AbdD4377694D19aBcCa55Ae784` funded with Base Sepolia USDC (Step 3)
 - [ ] Render account + Blueprint deploy for the public URL (Step 4)
 - [ ] Optional: ~$5 USDC on Base mainnet to the org wallet (Step 5)
-- [ ] Confirm the GitHub account: everything was created under `0xsaroj001` (the account the `gh` CLI is logged into); `Harshyadav442277` is also logged in but inactive
+- [ ] Confirm the GitHub account: the repo, forks, issue and PR live under `0xsaroj001` (now the active `gh` account); commits are authored as `Harshyadav442277`. Say if you want it the other way round.
 
 ## Verified ✅
 - Lucid Agents stable packages run on Node 24 with `@hono/node-server`; no Bun needed at runtime.
@@ -37,4 +38,4 @@ Updated 2026-09-06 (early). Plain-language steps for the user: [SETUP-STEPS.md](
 - Lucid surfaces thrown handler errors as HTTP 500 `internal_error`; the Landed code is in the message; the structured record comes from the free `execution` entrypoint.
 - In-memory payment storage and execution log; a restart loses the agent-side log (KeeperHub keeps the authoritative history; the shared idempotency key makes recovery safe, see the restart test).
 - Dead-network demo uses the in-memory KeeperHub.
-- Upstream PR to daydreamsai/lucid-agents not opened yet (planned Sep 10–13). Bounty plugin waits for `accepted` on #2329 per their policy.
+- Upstream PR daydreamsai/lucid-agents#1717 is open and unreviewed. Bounty plugin waits for `accepted` on KeeperHub/keeperhub#2329 per their policy.

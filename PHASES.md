@@ -13,7 +13,7 @@ Strategy and the unforgettable moment: [EDGE.md](EDGE.md).
 | 5. Ledger + mainnet | Sep 7–17, daily | `npm run ledger -- --count 20` every day into `docs/receipts.json`; a few Base mainnet payouts if ~$5 USDC is provided | Execution (volume) | ⏳ credentials |
 | 6. Public seller URL | Sep 8–9 | deployed seller (Render/Railway), agent card reachable, judge-as-buyer instructions with KeeperHub's own agentic wallet | Usefulness, panel | ⏳ hosting account |
 | 7. Bounty issue → PR | issue now → PR by Sep 12 | `bounty/ISSUE-DRAFT-lucid-agents-plugin.md` posted, `accepted`, plugin PR with tests; separate BUIDL | Bounty | ⏳ permission to post |
-| 8. Upstream to Lucid | Sep 10–13 | PR to daydreamsai/lucid-agents adding `@lucid-agents/keeperhub` in their package layout (Bun, tsup, changeset) | Depth | ⏳ permission to post |
+| 8. Upstream to Lucid | Sep 6 | PR to daydreamsai/lucid-agents adding `@lucid-agents/keeperhub` in their package layout (Bun, tsup, changeset, docs page) | Depth | ✅ PR #1717 open, unreviewed |
 | 9. Reliability report | Sep 12–13 | REPORT.md with numbers from the real API: time to verified receipt, sponsorship rate, unconfirmed/409 occurrences, chaos test results | Reliability | ⏳ after live runs |
 | **Freeze** | **Sep 14** | no new features | | |
 | 10. Rehearsal | Sep 14–15 | fresh-clone DEMO.md run, dead-network fallback, 4-minute panel script from EDGE.md | Panel | |

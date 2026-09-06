@@ -51,6 +51,6 @@ Dates are announced in the KeeperHub Discord builder channel. Join one, say you 
 
 - Public repo: https://github.com/0xsaroj001/landed (pushed, CI runs on every push).
 - Forks for the upstream pull requests: https://github.com/0xsaroj001/keeperhub and https://github.com/0xsaroj001/lucid-agents.
-- Bounty issue posted on keeperhub/keeperhub (link in the chat). Nothing to do until they reply; Claude watches it.
+- Bounty issue posted: https://github.com/KeeperHub/keeperhub/issues/2329. Upstream PR to Lucid Agents opened: https://github.com/daydreamsai/lucid-agents/pull/1717. Nothing to do until they reply; Claude watches both.
 - Bun installed for the Lucid upstream work.
 - Buyer wallet generated (address in the chat and via `npm run buyer:wallet`).

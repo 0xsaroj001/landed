@@ -99,6 +99,11 @@ A handler throws instead of returning on anything short of a verified receipt. L
 
 `execution_unconfirmed` means the outcome is unknown, not failed: retry with the same reference and never with a new one.
 
+## Upstream
+
+- Lucid Agents: [daydreamsai/lucid-agents#1717](https://github.com/daydreamsai/lucid-agents/pull/1717) adds `@lucid-agents/keeperhub`, this extension in their package layout, with their Bun test suite, lint, docs page and changeset.
+- KeeperHub: [KeeperHub/keeperhub#2329](https://github.com/KeeperHub/keeperhub/issues/2329) proposes the mirror-image connector so KeeperHub workflows can discover and pay Lucid agents.
+
 ## Docs
 
 [HACKATHON.md](HACKATHON.md) (brief, rubric, deadlines) · [PRD.md](PRD.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [PHASES.md](PHASES.md) · [GAPS.md](GAPS.md) · [MEMORY.md](MEMORY.md) · [DEMO.md](DEMO.md)
